@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifySlackSignature, downloadSlackFile, postAnalysisReply } from '@/lib/slack'
 import { analyzeImage } from '@/lib/claude'
+import { compressImage } from '@/lib/compress'
+import { uploadToR2 } from '@/lib/r2'
 
 // Supported image mime types
 const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const
@@ -32,9 +34,18 @@ async function processImageEvent(event: Record<string, unknown>) {
       const { slack } = await import('@/lib/slack')
       await slack.reactions.add({ channel, timestamp: ts, name: 'hourglass_flowing_sand' }).catch(() => {})
 
-      // Download and analyze
-      const buffer = await downloadSlackFile(url)
-      const result = await analyzeImage(buffer, mimeType)
+      // Download raw file from Slack
+      const rawBuffer = await downloadSlackFile(url)
+
+      // Compress before uploading to R2
+      const compressed = await compressImage(rawBuffer)
+
+      // Upload to R2
+      const key = `screenshots/slack-${Date.now()}-${crypto.randomUUID()}.jpg`
+      await uploadToR2(key, compressed.buffer, 'image/jpeg')
+
+      // Analyze using the compressed buffer directly (no re-fetch needed)
+      const result = await analyzeImage(compressed.buffer, 'image/jpeg')
 
       // Post reply in thread
       await postAnalysisReply(channel, ts, result, fileName)
